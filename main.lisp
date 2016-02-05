@@ -25,14 +25,17 @@
 ;;; These are the only functions guaranteed to be "safe" (including
 ;;; threadsafety and other expectations).
 
+;; (setf sb-impl::*default-external-format* :UTF-8)
+
 (in-package :twg)
+
+(defparameter *window* nil)
+(defparameter *default-pixel-format* nil)
+(defparameter *debug-mode* nil)
 
 (defclass simple-window (test-window)
   ((renderer :initform nil
-             :accessor window-renderer)
-   (texture :initform nil)
-   (update-queue :initform nil
-                 :accessor update-queue)))
+             :accessor window-renderer)))
 
 ;;; All of these methods are OPTIONAL.  However, without a render
 ;;; method, your window will not look like much!
@@ -41,31 +44,163 @@
 ;;; Note this is an :AFTER method.  You should either use :AFTER, or
 ;;; you must (CALL-NEXT-METHOD).
 
+(defun asset-path (name)
+  (merge-pathnames
+   (concatenate 'string "assets/" name) (asdf/system:system-source-directory :twg)))
+
+(defparameter *font-name* (asset-path "DejaVuSans.ttf"))
+
 (defparameter *font* nil)
+(defparameter *font-size* 28)
+
+(defparameter *small-font* nil)
+(defparameter *small-font-size* 14)
+
+(defparameter *line-height* (round (* 1.3 *font-size* )))
+
+(defparameter *card-textures* nil)
+
+(defun load-card-texture (renderer card)
+  (with-slots (name cost desc) card
+    (let ((bg-tex (load-texture-from-file renderer (asset-path "card.png")))
+          (name-tex (load-texture-from-text renderer name))
+          (cost-tex (load-texture-from-text renderer (format nil "λ: ~a" cost) :font *small-font*))
+          (desc-tex (load-texture-from-text renderer desc :font *small-font*))
+          (tex (sdl2:create-texture renderer
+                                    *default-pixel-format*
+                                    :target
+                                    *card-width*
+                                    *card-height*)))
+      (sdl2:set-render-target renderer tex)
+      (render-tex bg-tex 0 0)
+      (render-tex name-tex 10 0)
+      (render-tex cost-tex 10 (* 1 *line-height*))
+      (render-tex desc-tex 10 (* 2 *line-height*))
+      (sdl2:set-render-target renderer nil)
+      (load-texture-from-texture renderer tex))))
+
+(defun load-card-textures (renderer &optional (cards *cards*))
+  (loop for card in cards
+       collect (cons (card-name card) (load-card-texture renderer card))))
 
 (defmethod initialize-instance :after ((w simple-window) &key &allow-other-keys)
-  ;; GL setup can go here; your GL context is automatically active,
-  ;; and this is done in the main thread.
+  (setf (idle-render w) t)
   (sdl2-image:init '(:png))
   (sdl2-ttf:init)
-  (setf *font* (sdl2-ttf:open-font "Pacifico.ttf" 28))
+  (setf *font* (sdl2-ttf:open-font *font-name* *font-size*))
+  (setf *small-font* (sdl2-ttf:open-font *font-name* *small-font-size*))
   (setf (idle-render w) t)
-  (with-slots (renderer sdl-window texture) w
+  (with-slots (renderer sdl-window) w
     (setf renderer (sdl2:create-renderer sdl-window -1 '(:accelerated)))
-    (setf texture (load-texture-from-text renderer "Fuck you!"))))
+
+    (setf *default-pixel-format* (sdl2:get-window-pixel-format sdl-window))
+
+    (setf *card-textures* (load-card-textures renderer *cards*))
+
+    (setf (player-tex *player-1*) (load-texture-from-file renderer (asset-path "player-1.png")))
+    (setf (player-tex *player-2*) (load-texture-from-file renderer (asset-path "player-2.png")))
+
+    ;; (multiple-value-bind (format w h) (sdl2:get-current-display-mode 0)
+    ;;   (declare (ignore format))
+    ;;   (sdl2:set-window-size sdl-window (ash w -1) h))
+    (sdl2:set-window-size sdl-window 1920 540)))
+
+(defparameter *state* nil)
+
+(defun set-state (state)
+  (setf *state* state)
+  (ecase *state*
+    (:player-1 (start-turn *player-1*))
+    (:player-2
+     (make-avatar-turn *player-1*)
+     (start-turn *player-2*)
+     (make-ai-turn *player-2*)
+     (make-avatar-turn *player-2*)
+     (set-state :player-1))))
+
+(defparameter *card-width* 96)
+(defparameter *card-height* 128)
+
+(defparameter *w* 0)
+(defparameter *h* 0)
+
+(defun get-card-tex (card)
+  (cdr (assoc (card-name card) *card-textures*)))
+
+(defun render-card (renderer card x y)
+  (sdl2:set-render-draw-color renderer 255 0 0 255)
+  (sdl2:render-draw-rect renderer
+                         (sdl2:make-rect x y *card-width* *card-height*))
+  (render-tex (get-card-tex card) x y))
+
+(defun render-hand (renderer hand x y)
+  (loop
+     for card in hand
+     do (render-card renderer card x y)
+       (incf x *card-width*)))
+
+(defun render-log (renderer x y)
+  (loop
+     for text in *game-log*
+     do (let ((tex (load-texture-from-text renderer text)))
+          (render-tex tex x y))
+       (incf y *line-height*)))
+
+(defparameter *hp-width* 120)
+
+(defun render-hp (renderer hp x y)
+  (sdl2:set-render-draw-color renderer 22 188 22 255)
+  (sdl2:render-fill-rect renderer (sdl2:make-rect x y *hp-width* *line-height*))
+  (let ((tex (load-texture-from-text renderer (format nil "Hp: ~a" hp))))
+    (render-tex tex x y)))
+
+(defun render-stats (renderer player x y)
+  (let ((tex (load-texture-from-text renderer
+                                     (with-slots (dmg resist evasion) (player-avatar player)
+                                       (format nil "λ: ~a | dmg: ~a | ρ: ~a | ξ: ~a"
+                                               (player-mana player) dmg resist evasion)))))
+    (render-tex tex x y)))
 
 (defmethod render ((window simple-window))
-  ;; Your GL context is automatically active.  FLUSH and
-  ;; SDL2:GL-SWAP-WINDOW are done implicitly by GL-WINDOW
-  ;; after RENDER.
-  (with-slots (rotation renderer texture update-queue) window
-    (loop for callback in update-queue
-       do (funcall callback window)
-         finally (setf update-queue nil))
+  ;; (handler-case
+  (with-slots (rotation renderer) window
     (sdl2:set-render-draw-color renderer 33 33 33 255)
     (sdl2:render-clear renderer)
-    (render-tex texture 0 0)
+    (multiple-value-bind (w h) (window-size window)
+
+      (let ((hp (avatar-hp (player-avatar *player-1*))))
+        (render-hp renderer hp 0 (+ 4 *card-height*))
+        (render-stats renderer *player-1*  (+ 4 *hp-width*) (+ 4 *card-height*)))
+
+      (let ((hp (avatar-hp (player-avatar *player-2*))))
+        (render-hp renderer hp (- w *hp-width*) (+ 4 *card-height*))
+        (render-stats renderer *player-2* (- w 400 *hp-width*) (+ 4 *card-height*)))
+
+      (let ((hand (player-hand *player-1*)))
+        (render-hand renderer
+                     hand
+                     0
+                     0))
+      (let ((hand (player-hand *player-2*)))
+        (render-hand renderer
+                     hand
+                     (- w (* (length hand) *card-width*))
+                     (- h *card-height*)))
+
+      (let ((tex (player-tex *player-1*)))
+        (render-tex tex
+                    0
+                    (- (ash h -1) (ash (tex-height tex) -1))))
+
+      (let ((tex (player-tex *player-2*)))
+        (render-tex tex
+                    (- w (tex-width tex))
+                    (- (ash h -1) (ash (tex-height tex) -1))))
+
+      (render-log renderer (round (* 0.35 w)) 0))
     (sdl2:render-present renderer)))
+    ;; (error (err) (log-trace "Got render error ~a" err))))
+
 
 (defun test-reload-text (text)
   (lambda (window)
@@ -76,7 +211,15 @@
 
 (defmethod close-window ((window simple-window))
   (format t "Bye!~%")
-  (sdl2:destroy-renderer (window-renderer window))
+
+  (loop for tex in *card-textures*
+       do (sdl2:destroy-texture (tex-texture (cdr tex))))
+
+  (with-slots (renderer) window
+    (when renderer
+      (sdl2:destroy-renderer renderer)))
+  (sdl2-ttf:close-font *font*)
+  (sdl2-ttf:close-font *small-font*)
   (sdl2-ttf:quit)
   (sdl2-image:quit)
   ;; To _actually_ destroy the GL context and close the window,
@@ -84,10 +227,10 @@
   ;; prompt the user!
   (call-next-method))
 
-(defmethod mousewheel-event ((window simple-window) ts x y)
-  (with-slots (rotation) window
-    (incf rotation (* 12 y))
-    (render window)))
+;; (defmethod mousewheel-event ((window simple-window) ts x y)
+;;   (with-slots (rotation) window
+;;     (incf rotation (* 12 y))
+;;     (render window)))
 
 (defmethod textinput-event ((window simple-window) ts text)
   (format t "You typed: ~S~%" text))
@@ -98,7 +241,16 @@
       (format t "~A ~S ~S~%" state scancode (sdl2:scancode-name scancode)))))
 
 (defmethod mousebutton-event ((window simple-window) state ts b x y)
-  (format t "~A button: ~A at ~A, ~A~%" state b x y))
+  (format t "~A button: ~A at ~A, ~A~%" state b x y)
+  (when (and (eq state :mousebuttonup) (eq *state* :player-1))
+    (let ((hand (player-hand *player-1*))
+          (index (floor (/ x *card-width*))))
+      (if (< index (length hand))
+          (let ((card (nth index hand)))
+            (if (can-play-card *player-1* card)
+                (play-card *player-1* card)
+                (push-and-trace "Cannot play card ~a" (card-name card))))
+          (set-state :player-2)))))
 
 (defmethod mousemotion-event ((window simple-window) ts mask x y xr yr)
   (when (> mask 0)
@@ -136,6 +288,14 @@
     :accessor tex-texture
     :initform nil)))
 
+(defun load-texture-from-texture (renderer sdl-texture)
+  (let ((tex (make-instance 'tex :renderer renderer)))
+    (with-slots (renderer texture  width height) tex
+      (setf width (sdl2:texture-width sdl-texture))
+      (setf height (sdl2:texture-height sdl-texture))
+      (setf texture sdl-texture))
+    tex))
+
 (defun load-texture-from-file (renderer filename)
   (let ((tex (make-instance 'tex :renderer renderer)))
     (with-slots (renderer texture  width height) tex
@@ -147,13 +307,14 @@
         (setf texture (sdl2:create-texture-from-surface renderer surface))))
     tex))
 
-(defun load-texture-from-text (renderer text)
+(defun load-texture-from-text (renderer text &key (font *font*) (r 255) (g 255) (b 255) (a 255))
   (let ((tex (make-instance 'tex :renderer renderer)))
     (with-slots (renderer texture  width height) tex
-      (let ((surface (sdl2-ttf:render-text-solid *font* text 255 255 255 255)))
+      (let ((surface (sdl2-ttf:render-utf8-solid font text r g b a)))
         (setf width (sdl2:surface-width surface))
         (setf height (sdl2:surface-height surface))
-        (setf texture (sdl2:create-texture-from-surface renderer surface))))
+        (setf texture (sdl2:create-texture-from-surface renderer surface))
+        (sdl2:free-surface surface)))
     tex))
 
 (defun set-color (tex r g b)
@@ -170,177 +331,10 @@
                                                     (if clip (sdl2:rect-height clip) height))
                          :angle angle
                          :center center
-                         :flip (list flip))))
+                         :flip (list (or flip :none)))))
 
-
-(defclass card ()
-  ((name :initarg :name
-         :accessor card-name)
-   (cost :initarg :cost
-         :accessor card-cost)
-   (desc :initarg :desc
-         :accessor card-desc)))
-
-(defparameter *cards* (list (make-instance 'card :name "()" :cost 1 :desc "+10hp")
-                            (make-instance 'card :name "[]" :cost 2 :desc "+2dmg")
-                            (make-instance 'card :name "{}" :cost 3 :desc "+10% resist")
-                            (make-instance 'card :name "<>" :cost 4 :desc "+10% evasion")
-                            (make-instance 'card :name "⊂⊃" :cost 5 :desc "+50hp")
-                            (make-instance 'card :name "≺≻" :cost 6 :desc "+10dmg")
-                            (make-instance 'card :name "⊏⊐" :cost 7 :desc "+10% resist +10% evasion")))
-
-(defparameter *base-hp* 100)
-(defparameter *base-dmg* 10)
-
-(defclass avatar ()
-  ((hp :initform *base-hp*
-       :accessor avatar-hp)
-   (dmg :initform *base-dmg*
-        :accessor avatar-dmg)
-   (resist :initform 0
-           :accessor avatar-resist)
-   (evasion :initform 0
-            :accessor avatar-evasion)))
-
-(defmethod print-object ((ava avatar) stream)
-  (with-slots (hp dmg resist evasion) ava
-    (format stream "~&| hp ~3a | dmg ~2a | resist ~a | evasion ~a |"
-            hp dmg resist evasion)))
-
-(defclass player ()
-  ((avatar :accessor player-avatar)
-   (mana :accessor player-mana)
-   (hand :accessor player-hand)
-   (deck :accessor player-deck)
-   (name :accessor player-name
-         :initarg :name
-         :initform (error "Must supply a name"))))
-
-(defun random-deck ()
-  (loop for i below *deck-size*
-     collect (random-elt *cards*)))
-
-(defun reset-player (player)
-  (with-slots (hand deck mana avatar) player
-    (setf mana 0
-          hand '()
-          deck (random-deck)
-          avatar (make-instance 'avatar))))
-
-(defmethod initialize-instance :after ((pl player) &key)
-  (reset-player pl))
-
-(defmethod print-object ((pl player) stream)
-  (with-slots (name mana deck hand) pl
-    (format stream "~&| ~a | mana ~2d | hand ~(~a~) | deck ~d |"
-            name mana (length hand) (length deck))))
-
-(defparameter *deck-size* 30)
-(defparameter *max-deck-size* 5)
-
-(defparameter *game* nil)
-(defparameter *player-1* (make-instance 'player :name "Илья"))
-(defparameter *player-2* (make-instance 'player :name "Мальчик"))
-(defparameter *players* (list *player-1* *player-2*))
-(defparameter *max-mana* 10)
-
-(defun start-round ()
-  (mapc #'reset-player *players*))
-
-(defun start-turn (player)
-  (with-slots (mana hand deck) player
-    (when (< mana *max-mana*)
-      (incf mana))
-    (when deck
-      (let ((card (pop deck)))
-        (when (< (length hand) *max-deck-size*))
-        (push card hand)))))
-
-(defparameter *trace-enabled* t)
-
-(defun log-trace (fmt &rest args)
-  (when *trace-enabled*
-    (apply #'format *standard-output* fmt args)))
-
-(defun make-turn (player)
-  (log-trace "~&Turn of ~a~%" (player-name player)))
-
-(defun other-player (player &optional (players *players*))
-  (if (equal player (car players))
-      (cadr players)
-      (car players)))
-
-(defun can-play-card (player card)
-  (>= (player-mana player) (card-cost card)))
-
-(defun play-card (player card)
-  (log-trace "~&~a playing ~a card" (player-name player) (card-name card))
-  (with-slots (hp dmg resist evasion) (player-avatar player)
-    (case (card-name card)
-      ("()" (incf hp 2))
-      ("[]" (incf dmg 5))
-      ("{}" (incf resist 10))
-      ("<>" (incf evasion 10))
-      ("⊂⊃" (incf hp 10))
-      ("≺≻" (incf dmg 20))
-      ("⊏⊐" (incf resist 10) (incf evasion 10)))))
-
-(defun roll-dice ()
-  (random 100))
-
-(defun lucky (value)
-  (< (roll-dice) value))
-
-(defun hit (attacker defending)
-  (with-slots (hp resist evasion) defending
-    (if (lucky evasion)
-        'miss
-        (let ((dmg (* (avatar-dmg attacker) 0.01 (- 100 resist))))
-          (decf hp dmg)
-          dmg))))
-
-(defun update-avatar (avatar)
-  (with-slots (dmg resist evasion) avatar
-    (when (> dmg *base-dmg*)
-      (decf dmg))
-    (setf resist (ash resist -1))
-    (setf evasion (ash evasion -1))))
-
-(defun make-avatar-turn (player)
-  (with-accessors ((player-name player-name) (player-avatar player-avatar)) player
-    (with-accessors ((enemy-name player-name) (enemy-avatar player-avatar)) (other-player player)
-      (let ((result (hit player-avatar enemy-avatar)))
-        (log-trace "~&~a: ~a" player-name player-avatar)
-        (if (eq result 'miss)
-            (log-trace "~&~a's avatar missed" player-name)
-            (log-trace "~&~a's avatar made ~a damage" player-name result))
-        (log-trace "~&~a: ~a" enemy-name enemy-avatar)
-        (update-avatar player-avatar)
-        (update-avatar enemy-avatar)))))
-
-(defun find-playable-card (player)
-  (let ((hand (player-hand player)))
-    (when hand
-      (find-if (lambda (card) (can-play-card player card))
-               (shuffle hand)))))
-
-(defun make-ai-turn (player)
-  (log-trace "~&~%AI Turn of ~a~%" (player-name player))
-  (let ((card (find-playable-card player)))
-    (if card
-        (play-card player card)
-        (log-trace "~&~a has no cards to play" (player-name player)))))
-
-(defun next-turn ()
-  (start-turn *player-1*)
-  (make-ai-turn *player-1*)
-  (make-avatar-turn *player-1*)
-
-  (start-turn *player-2*)
-  (make-ai-turn *player-2*)
-  (make-avatar-turn *player-2*)
-
-  (log-trace "~&***~% ~a" *players*))
-
-(defun test()
-  (dotimes (i 30) (next-turn)))
+(defun main()
+  (kit.sdl2:start)
+  (start-round)
+  (set-state :player-1)
+  (setf *window* (make-instance 'simple-window)))

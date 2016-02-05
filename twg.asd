@@ -11,5 +11,7 @@
   :serial t
 
   :components
-  ((:file "main")
+  ((:file "package")
+   (:file "game")
+   (:file "main")
    (:file "test-window")))
