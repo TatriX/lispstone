@@ -89,9 +89,8 @@
   (sdl2-ttf:init)
   (setf *font* (sdl2-ttf:open-font *font-name* *font-size*))
   (setf *small-font* (sdl2-ttf:open-font *font-name* *small-font-size*))
-  (setf (idle-render w) t)
   (with-slots (renderer sdl-window) w
-    (setf renderer (sdl2:create-renderer sdl-window -1 '(:accelerated)))
+    (setf renderer (sdl2:create-renderer sdl-window -1 '(:software)))
 
     (setf *default-pixel-format* (sdl2:get-window-pixel-format sdl-window))
 
