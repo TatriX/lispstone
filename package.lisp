@@ -1,7 +1,6 @@
 (in-package :defpackage+-user-1)
 
-;; TWG
-
-(defpackage+ :twg
+(defpackage+ :lispstone
   (:use #:cl #:alexandria #:kit.sdl2)
-  (:export #:main))
+  (:shadow :start)
+  (:export #:main #:main-win))

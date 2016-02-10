@@ -1,9 +1,4 @@
-;;;
-;;; This is just a basic window which does some convenient things for
-;;; tests, such as FPS and quitting on ESC.
-;;;
-
-(in-package :twg)
+(in-package :lispstone)
 
 (defclass test-window (window)
   ((start-time :initform (get-internal-real-time))
