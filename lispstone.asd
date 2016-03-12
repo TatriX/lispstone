@@ -6,7 +6,13 @@
   :author "TatriX <tatrics@gmail.com>"
   :license "MIT"
 
-  :depends-on (:alexandria :sdl2kit :defpackage-plus :sdl2-image :sdl2-ttf :sdl2-mixer)
+  :depends-on (:alexandria
+               :sdl2kit
+               :defpackage-plus
+               :sdl2-image
+               :sdl2-ttf
+               :sdl2-mixer
+               :cl-locale)
   :pathname ""
   :serial t
 
@@ -17,16 +23,25 @@
    (:file "tex")
    (:file "fonts")
 
-   (:file "entity")
+   (:file "config")
 
-   (:file "cards")
+   (:file "entity")
+   (:file "text-entity")
+
+
+   (:file "card")
    (:file "entities/card")
+
+   (:file "entities/bonus")
 
    (:file "log")
    (:file "entities/log")
 
    (:file "player")
    (:file "entities/player")
+
+   (:file "enemy")
+   (:file "entities/enemy")
 
    (:file "deck")
    ;; (:file "entities/deck")
@@ -37,7 +52,18 @@
    (:file "avatar")
    (:file "entities/avatar")
 
+   (:file "cards")
+   (:file "enemies")
+
+   (:file "help")
+
    (:file "scene")
+   (:file "scenes/table")
+   (:file "scenes/ladder")
+   (:file "scenes/shop")
+   (:file "scenes/luck")
+   (:file "scenes/game-over")
+
    (:file "test-window")
    (:file "game")
 

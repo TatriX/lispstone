@@ -2,23 +2,29 @@
 
 (defclass avatar ()
   ((hp :initform *base-hp*
-       :accessor avatar-hp)
+       :accessor avatar-hp
+       :initarg :hp)
    (dmg :initform *base-dmg*
-        :accessor avatar-dmg)
+        :accessor avatar-dmg
+        :initarg :dmg)
    (resist :initform 0
-           :accessor avatar-resist)
+           :accessor avatar-resist
+           :initarg :resist)
    (evasion :initform 0
-            :accessor avatar-evasion)))
+            :accessor avatar-evasion
+            :initarg :evasion)
+   (name :initform nil
+         :initarg :name)))
 
 (defmethod print-object ((ava avatar) stream)
   (with-slots (hp dmg resist evasion) ava
     (format stream "hp ~3a | dmg ~2a | resist ~a | evasion ~a"
             hp dmg resist evasion)))
 
+
 (defun update-avatar (avatar)
   (with-slots (dmg resist evasion) avatar
-    (when (> dmg *base-dmg*)
-      (decf dmg))
+    (incf dmg)
     (setf resist (ash resist -1))
     (setf evasion (ash evasion -1))))
 
@@ -28,7 +34,7 @@
       (let ((result (hit player-avatar enemy-avatar)))
         (log-trace "~&~a: ~a" player-name player-avatar)
         (if (eq result 'miss)
-            (push-and-trace "~&~a's avatar missed" player-name)
+            (push-and-trace "~a missed" player-name)
             (push-and-trace "~&~a → ~a → ~a " player-name result enemy-name))
         (log-trace "~&~a: ~a" enemy-name enemy-avatar)))))
 

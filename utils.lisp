@@ -14,7 +14,16 @@
 
 (defun asset-path (name)
   (merge-pathnames
-   (concatenate 'string "assets/" name)
+   (make-pathname :directory '(:relative "assets") :name name :type :unspecific)
    (if *debug*
        (asdf/system:system-source-directory :lispstone)
        *default-pathname-defaults*)))
+
+
+(defmacro with-fields (slots instance &body body)
+  `(with-accessors ,(loop for v in slots collect `(,v ,(symbolicate instance "-" v))) ,instance
+    ,@body))
+
+
+(defun tt (fmt &rest args)
+  (i18n fmt :params args))

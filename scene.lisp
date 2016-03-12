@@ -12,13 +12,40 @@
     :initform (error "Must supply a renderer"))
    (graph
     :initform '()
-    :accessor scene-graph)))
+    :accessor scene-graph)
+   (bg
+    :initform nil)))
+
+(defun scene-name (scene)
+  (make-keyword (class-name (class-of scene))))
+
+(defgeneric init-scene (scene))
+(defgeneric update-scene (scene))
+(defgeneric render-scene (scene))
+(defgeneric scene-onswitch (scene))
+
+(defmethod initialize-instance :after ((scene scene) &key &allow-other-keys)
+  (init-scene scene)
+  (load-scene scene))
 
 (defun add-to-scene (scene entity)
-  (push entity (scene-graph scene)))
+  (with-slots (graph) scene
+    (setf graph (nconc graph (list entity))))
+  entity)
 
-(defun remove-from-scene (scene id)
-  (delete id (scene-graph scene) :key #'entity-id))
+(defun add-to-scene-and-load (scene entity)
+  (add-to-scene scene entity)
+  (with-slots (renderer) scene
+    (load-entity entity renderer))
+  entity)
+
+(defun remove-from-scene (scene entity)
+  (with-slots (graph) scene
+    (setf graph (remove entity graph :test #'equal))))
+
+(defun remove-from-scene-by-id (scene id)
+  (with-slots (graph) scene
+    (setf graph (remove id graph :key #'entity-id))))
 
 (defun find-entity (scene id)
   (find id (scene-graph scene) :key #'entity-id))
@@ -26,69 +53,24 @@
 (defun find-entity-by (scene &key coords)
   (when coords
     (destructuring-bind (x y) coords
-      (find-if (lambda (entity)
-                 (%with-entity (tex ex ey ew eh) entity
-                     (and (<= ex x)
-                          (<= ey y)
-                          (>= (+ ex ew) x)
-                          (>= (+ ey eh) y)))) (scene-graph scene)))))
+      (find-entity-by-coords x y (reverse (scene-graph scene))))))
 
+(defun find-entity-by-coords (x y list)
+  (loop
+     for entity in list
+     if (point-in-entity entity x y)
+     do (return
+          (let ((child (find-entity-by-coords x y (entity-children entity))))
+            (if (and child (point-in-entity child x y))
+                child
+                entity)))))
 
-(defmethod initialize-instance :after ((scene scene) &key &allow-other-keys)
-  (with-slots (renderer width height) scene
-    (add-to-scene scene (make-instance 'player-entity
-                                       :id :player-1
-                                       :player *player-1*
-                                       :y height
-                                       :anchor-y :bottom))
-    (add-to-scene scene (make-instance 'player-entity
-                                       :id :player-2
-                                       :player *player-2*
-                                       :x width
-                                       :y 0
-                                       :anchor-x :right))
-    (add-to-scene scene (make-instance 'hand-entity
-                                       :id :hand
-                                       :hand (player-hand *player-1*)
-                                       :y (- height 10)
-                                       :x (ash width -1)
-                                       :anchor-y :bottom
-                                       :anchor-x :center))
-    (add-to-scene scene (make-instance 'avatar-entity
-                                       :id :avatar-1
-                                       :avatar (player-avatar *player-1*)
-                                       :x (round (* 0.3 width))
-                                       :y (ash height -1)
-                                       :anchor-y :center))
-    (add-to-scene scene (make-instance 'avatar-entity
-                                       :id :avatar-2
-                                       :avatar (player-avatar *player-2*)
-                                       :x (round (* 0.6 width))
-                                       :y (ash height -1)
-                                       :anchor-y :center))
-    (add-to-scene scene (make-instance 'log-entity
-                                       :id :log
-                                       :x 10
-                                       :y 10
-                                       :log *round-log*))
-    (add-to-scene scene (make-instance 'entity
-                                       :id :battlefield
-                                       :x (ash width -1)
-                                       :y (+ (ash height -1) 75) ;; FIXME:
-                                       :anchor-x :center
-                                       :anchor-y :center))
-    (add-to-scene scene (make-instance 'entity
-                                       :id :end-turn
-                                       :x (- width 10)
-                                       :y (- height 10)
-                                       :anchor-x :right
-                                       :anchor-y :bottom))
-    (add-to-scene scene (make-instance 'entity
-                                       :id :mute
-                                       :x (- width 10)
-                                       :y (ash height -1)
-                                       :anchor-x :right
-                                       :anchor-y :bottom))))
+(defun point-in-entity (entity mx my)
+  (with-fields (x y width height) entity
+    (and (<= x mx)
+         (<= y my)
+         (>= (+ x width) mx)
+         (>= (+ y height) my))))
 
 (defmacro with-scene-graph ((entity renderer) scene &body body)
   `(with-slots (graph ,renderer) ,scene
@@ -100,19 +82,25 @@
   (with-scene-graph (entity renderer) scene
     (load-entity entity renderer)))
 
-(defun update-scene (scene)
-  (with-scene-graph (entity renderer) scene
-    (update-entity entity)))
+(defmethod scene-onswitch ((scene scene)))
 
-(defun render-scene (scene)
+(defmethod clear-scene ((scene scene))
+  (with-slots (graph) scene
+    (setf graph nil)))
+
+(defmethod init-scene ((scene scene))
+  (with-slots (bg renderer) scene
+    (setf bg (load-texture-from-file renderer (asset-path (format nil "~a.png" (scene-name scene)))))))
+
+(defmethod update-scene ((scene scene))
   (with-scene-graph (entity renderer) scene
-    (render-entity entity renderer)
-    (with-slots (width height) scene
-      (let ((tex (load-texture-from-text renderer (format nil "~a (~a : ~a) ~a"
-                                                          (player-name *player-1*)
-                                                          (car *score*)
-                                                          (cadr *score*)
-                                                          (player-name *player-2*)))))
-        (render-tex tex
-                    (- (ash width -1) (ash (tex-width tex) -1))
-                    10)))))
+    (update-entity entity scene)))
+
+(defmethod render-scene ((scene scene))
+  (render-tex (slot-value scene 'bg) 0 0)
+  (with-scene-graph (entity renderer) scene
+    (handler-case
+        (with-slots (visible-in) entity
+          (when (or (null visible-in) (find *state* visible-in))
+            (render-entity entity renderer)))
+      (error (err) (error (format nil "render error: ~a; entity ~a" err (entity-id entity)))))))

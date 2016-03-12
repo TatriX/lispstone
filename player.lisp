@@ -1,11 +1,11 @@
 (in-package :lispstone)
 
-(defparameter *max-mana* 10)
-
 (defclass player ()
   ((avatar
+    :initarg :avatar
     :initform (make-instance 'avatar)
     :accessor player-avatar)
+   (avatar-proto :initarg :avatar-proto)
    (mana :accessor player-mana)
    (max-mana :accessor player-max-mana)
    (hand
@@ -14,15 +14,33 @@
    (deck :accessor player-deck)
    (name :accessor player-name
          :initarg :name
-         :initform (error "Must supply a name"))))
+         :initform (error "Must supply a name"))
+   (bonuses
+    :initform 0
+    :accessor player-bonuses)
+   (luck :initform nil)))
 
 (defun reset-player (player)
-  (with-slots (hand deck mana max-mana avatar) player
+  (with-slots (hand deck mana max-mana avatar avatar-proto) player
     (reset-hand hand)
-    (reset-avatar avatar)
+    (if (slot-boundp player 'avatar-proto)
+        (with-slots (name hp dmg resist evasion) avatar
+          (with-slots ((name-x name)
+                       (hp-x hp)
+                       (dmg-x dmg)
+                       (resist-x resist)
+                       (evasion-x evasion)) avatar-proto
+            (setf name name-x
+                  hp hp-x
+                  dmg dmg-x
+                  resist resist-x
+                  evasion evasion-x)))
+        (reset-avatar avatar))
     (setf mana 0
           max-mana 0
-          deck (random-deck))))
+          deck (random-deck (ecase (type-of player)
+                              (player (available-cards))
+                              (enemy *cards*))))))
 
 (defmethod initialize-instance :after ((player player) &key)
   (reset-player player))
@@ -30,7 +48,7 @@
 (defmethod print-object ((player player) stream)
   (with-slots (name mana deck hand) player
     (format stream "~a | mana ~2d | hand ~a | deck ~d"
-            name mana (length hand) (length deck))))
+            name mana (hand-size hand) (length deck))))
 
 (defun take-card (player)
   (with-slots (name hand deck) player
@@ -44,8 +62,7 @@
         (push-and-trace "Deck is empty!"))))
 
 (defun can-play-card (player card)
-  (>= (player-mana player) (card-cost card)))
-
+   (>= (player-mana player) (card-cost card)))
 
 (defun remove-card (player card)
   (hand-remove-card (player-hand player) card))
@@ -53,10 +70,18 @@
 (defun play-card (player card)
   (with-slots (mana name avatar) player
     (remove-card player card)
-    (with-accessors ((card-name card-name) (cost card-cost)) card
-      (push-and-trace "~&~a → ~a" name card-name)
-      (decf mana cost)
-      (funcall (card-effect card) avatar))))
+    (apply-card card player))
+  (let ((clone (clone-card-entity (get-card-entity card) card))
+        (scene (find-scene *window* :table-scene)))
+    (with-slots (width height) scene
+      (with-slots (id x y anchor-x anchor-y) clone
+        (setf id :played-card
+              x (ash width -1)
+              y (+ (ash height -1) 50)
+              anchor-x :center
+              anchor-y :center)))
+    (entity-fade-out clone 1.5)
+    (add-to-scene scene clone)))
 
 (defun find-playable-card (player)
   (with-slots (hand) player
@@ -97,3 +122,8 @@
 
 (defun dead-p (player)
   (<= (avatar-hp (player-avatar player)) 0))
+
+(defun consume-bonuses (player)
+  (with-slots (luck bonuses) player
+    (setf luck (plusp bonuses)
+          bonuses 0)))

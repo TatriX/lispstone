@@ -13,7 +13,7 @@
 
 (defun push-to-round-log (fmt &rest args)
   (with-slots (records) *round-log*
-    (push (apply #'format nil fmt args) records)))
+    (push (apply #'tt fmt args) records)))
 
 (defun log-trace (fmt &rest args)
   (when *trace-enabled*

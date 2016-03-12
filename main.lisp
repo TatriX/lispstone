@@ -1,6 +1,7 @@
-(setf sb-impl::*default-external-format* :UTF-8)
-
+;; (setf sb-impl::*default-external-format* :UTF-8)
 (in-package :lispstone)
+
+(proclaim '(optimize (speed 3)))
 
 (defvar *window* nil)
 (defvar *debug* nil)
@@ -9,7 +10,12 @@
 
 (defclass simple-window (test-window)
   ((renderer :accessor window-renderer)
-   (scene :accessor window-scene)))
+   (scene
+    :initform nil
+    :accessor window-scene)
+   (scenes
+    :initform '()
+    :accessor window-scenes)))
 
 (defun create-renderer (sdl-window)
   (handler-case
@@ -19,221 +25,216 @@
 (defparameter *music* nil)
 (defparameter *music-playing* nil)
 
-(defparameter *lose-tex* nil)
-(defparameter *win-tex* nil)
-(defparameter *round-end-tex* nil)
 
 (defparameter *screen-width* 1280)
 (defparameter *screen-height* 720)
 
 (defmethod initialize-instance :after ((w simple-window) &key &allow-other-keys)
   (setf (idle-render w) t)
-  (sdl2-image:init '(:png))
-  (sdl2-ttf:init)
 
-  (sdl2-mixer:init :ogg)
-  (sdl2-mixer:open-audio 48000 :s16sys 1 1024)
+  (load-fonts)
 
-  (setf *music* (sdl2-mixer:load-music (asset-path "song.ogg")))
-  (sdl2-mixer:volume -1 50)
-  (sdl2-mixer:play-music *music*)
-  (setf *music-playing* t)
-
-  (let ((font-path (asset-path *font-name*)))
-    (setf *font* (sdl2-ttf:open-font font-path *font-size*)
-          *small-font* (sdl2-ttf:open-font font-path *small-font-size*)))
-  (with-slots (scene renderer sdl-window) w
+  (with-slots (renderer sdl-window) w
     (setf renderer (create-renderer sdl-window))
 
     (setf *default-pixel-format* (sdl2:get-window-pixel-format sdl-window))
 
-    (setf *card-textures* (load-card-textures renderer *cards*))
+    (load-card-entities renderer *cards*)
 
-    (setf *lose-tex* (load-texture-from-text renderer "You lost, faggot." :r 200 :g 50 :b 50))
-    (setf *win-tex* (load-texture-from-text renderer "You won, faggot." :r 50 :g 200 :b 50))
+    (load-scenes w)
 
-    ;; (sdl2:set-window-fullscreen sdl-window :desktop)
-    ;; (multiple-value-bind (w h) (window-size w)
-    ;;   (setf scene (make-instance 'scene
-    ;;                              :width w
-    ;;                              :height h
-    ;;                              :renderer renderer)))
+    (start-music)
+    (set-state :ladder w)))
+
+(defun load-scenes (window)
+  (loop for scene in '(table-scene
+                       luck-scene
+                       ladder-scene
+                       shop-scene
+                       game-over-scene)
+     do (add-scene window (make-instance scene
+                                    :width *screen-width*
+                                    :height *screen-height*
+                                    :renderer (window-renderer window)))))
+
+(defun load-fonts ()
+  (let ((font-path (asset-path *font-name*)))
+    (setf *font* (sdl2-ttf:open-font font-path *font-size*)
+          *small-font* (sdl2-ttf:open-font font-path *small-font-size*))))
+
+(defun add-scene (window scene)
+  (push scene (window-scenes window)))
+
+(defun find-scene (window name)
+  (find name (window-scenes window) :key #'scene-name))
+
+(defun set-scene (window name)
+  (with-slots ((current scene)) window
+    (let ((scene (find-scene window name)))
+      (unless scene
+        (error "Scene ~a not found" name))
+      (scene-onswitch scene)
+      (setf current scene))))
 
 
-    (sdl2:set-window-size sdl-window *screen-width* *screen-height*)
-    (setf scene (make-instance 'scene
-                               :width *screen-width*
-                               :height *screen-height*
-                               :renderer renderer))
-    (load-scene scene)))
+(defun start-music ()
+  (setf *music* (sdl2-mixer:load-music (asset-path "plain.ogg")))
+  (sdl2-mixer:volume -1 50)
+
+  (unless *debug*
+    (sdl2-mixer:play-music *music*)
+    (setf *music-playing* t)))
 
 (defparameter *state* nil)
 
-(defun win (player)
-  (if (equalp *player-1* player)
-      (progn
-        (incf (car *score*))
-        (setf *round-end-tex* *win-tex*))
-      (progn
-        (incf (cadr *score*))
-        (setf *round-end-tex* *lose-tex*)))
-  (set-state :round-end))
+(defun game-over ()
+  (set-state :game-over))
 
-(defun set-state (state)
+(defun round-end-splash (id)
+  (start-round)
+  (set-state :ladder)
+  (let ((scene (find-scene *window* :ladder-scene)))
+    (with-slots (width height) scene
+      (entity-fade-out (add-to-scene-and-load scene (make-instance 'entity
+                                                                   :id id
+                                                                   :x (ash width -1)
+                                                                   :y (ash height -1)
+                                                                   :anchor-x :center
+                                                                   :anchor-y :center)) 1.5))))
+(defun player-wins ()
+  (incf (car *score*))
+  (next-enemy)
+  (if (>= *current-enemy* (length *enemies*))
+      (game-over)
+      (round-end-splash :win)))
+
+(defun enemy-wins ()
+  (incf (cadr *score*))
+  (round-end-splash :lost))
+
+(defun set-state (state &optional (window *window*))
+  (log-trace "New state ~a~%" state)
   (setf *state* state)
   (ecase *state*
-    (:player-1 (start-turn *player-1*))
-    (:player-2
-     (make-avatar-turn *player-1*)
-     (start-turn *player-2*)
-     (make-ai-turn *player-2*)
-     (make-avatar-turn *player-2*)
-     (cond
-       ((dead-p *player-1*)
-        (win *player-2*))
-       ((dead-p *player-2*)
-        (win *player-1*))
-       (t (set-state :player-1))))
-    (:round-end
-     (format t "END"))))
+    (:ladder
+     (set-scene window :ladder-scene))
+    (:shop
+     (set-scene window :shop-scene))
+    (:delay)
+    (:round-start
+     (set-scene window :table-scene)
+     (set-state :player))
+    (:player (start-turn *player*))
+    (:player-attack
+     (set-scene window :luck-scene))
+    (:player-attack-animation
+     (set-scene window :table-scene))
+    (:player-luck
+     (with-slots (luck name) *player*
+       (if luck
+           (progn
+             (push-and-trace "Fortune loves you, ~a!" name)
+             (setf luck nil)
+             (set-state :player-attack-animation))
+           (progn
+             (make-ai-turn *enemy*)
+             (set-state :enemy)))))
+    (:enemy)
+    (:enemy-attack-animation)
+    (:game-over
+     (set-scene window :game-over-scene))))
 
 (defmethod render ((window simple-window))
   ;; (handler-case
   (with-slots (scene renderer) window
-    (sdl2:set-render-draw-color renderer 33 33 33 255)
+    (sdl2:set-render-draw-color renderer 11 11 11 255)
     (sdl2:render-clear renderer)
-    (case *state*
-      (:round-end
-       (render-tex *round-end-tex*
-                   (- (ash *screen-width* -1) (ash (tex-width *round-end-tex*) -1))
-                   (- (ash *screen-height* -1) (ash (tex-height *round-end-tex*) -1))))
-      (t (render-scene scene)))
+    (update-scene scene)
+    (render-scene scene)
     (sdl2:render-present renderer)))
 
 (defmethod close-window ((window simple-window))
-  (format t "Bye!~%")
-
-  (with-slots (renderer) window
-    (when renderer
-      (sdl2:destroy-renderer renderer)))
-
   (sdl2-mixer:halt-music)
-  (sdl2-mixer:close-audio)
   (sdl2-mixer:free-music *music*)
-  (sdl2-mixer:quit)
 
-  (sdl2-ttf:close-font *font*)
-  (sdl2-ttf:close-font *small-font*)
-  (sdl2-ttf:quit)
-
-  (sdl2-image:quit)
-
-  ;; To _actually_ destroy the GL context and close the window,
-  ;; CALL-NEXT-METHOD.  You _may_ not want to do this, if you wish to
-  ;; prompt the user!
-  (call-next-method))
-
-;; (defmethod window-event ((window simple-window) (type (eql :resized)) timestamp data1 data2)
-;;     (multiple-value-bind (format w h) (sdl2:get-current-display-mode 0)
-;;       (declare (ignore format))
-;;       (sdl2:set-window-size (sdl-window window) w h)))
-
-;; (defmethod mousewheel-event ((window simple-window) ts x y)
-;;   (with-slots (rotation) window
-;;     (incf rotation (* 12 y))
-;;     (render window)))
-
-(defmethod textinput-event ((window simple-window) ts text)
-  (format t "You typed: ~S~%" text))
-
-(defmethod keyboard-event ((window simple-window) state ts repeat-p keysym)
-  (let ((scancode (sdl2:scancode keysym)))
-    (unless repeat-p
-      (format t "~A ~S ~S~%" state scancode (sdl2:scancode-name scancode)))))
+  (call-next-method)
+  (unless *debug*
+    (deinit)))
 
 (defmethod mousebutton-event ((window simple-window) state ts b x y)
-  (format t "~A button: ~A at ~A, ~A~%" state b x y)
-  (when (eq state :mousebuttonup)
+  (when (eq state :mousebuttondown)
     (case *state*
-      (:player-1
+      (:player-attack-animation)
+      (:enemy-attack-animation)
+      (t
        (let ((entity (find-entity-by (window-scene window) :coords (list x y))))
-         (typecase entity
-           (hand-entity
-            (with-slots (hand) entity
-              (%with-entity (tex ex ey ew eh) entity
-                (declare (ignore ey))
-                (let ((index (floor (/ (- x ex) *card-width*))))
-                  (if (< index (hand-size hand))
-                      (let ((card (nth index (hand-cards hand))))
-                        (if (can-play-card *player-1* card)
-                            (play-card *player-1* card)
-                            (push-and-trace "Cannot play card ~a" (card-name card)))))))))
-           (entity (case (entity-id entity)
-                     (:mute (if *music-playing*
-                                (progn (setf *music-playing* nil)
-                                       (sdl2-mixer:halt-music))
-                                (progn (setf *music-playing* t)
-                                       (sdl2-mixer:play-music *music*))))
-                     (:end-turn (set-state :player-2)))))))
-      (:round-end (start-round)
-                  (set-state :player-1)))))
-
-
+         (when entity
+           (entity-onclick entity)
+           (case (entity-id entity)
+             (:mute (if *music-playing*
+                        (progn (setf *music-playing* nil)
+                               (sdl2-mixer:halt-music))
+                        (progn (setf *music-playing* t)
+                               (sdl2-mixer:play-music *music*))))
+             (:end-turn (set-state :player-attack)))))))))
 
 (defparameter *hovered-entity* nil)
-(defparameter *hovered-card* -1)
 
 (defmethod mousemotion-event ((window simple-window) ts mask x y xr yr)
-  (case *state*
-    (:player-1
-     (let ((entity (find-entity-by (window-scene window) :coords (list x y))))
-       (typecase entity
-         (hand-entity
-          (with-slots (hand) entity
-            (%with-entity (tex ex ey ew eh) entity
-              (declare (ignore ey))
-              (let ((index (floor (/ (- x ex) *card-width*))))
-                (if (< index (hand-size hand))
-                    (setf *hovered-card* index)
-                    (setf *hovered-card* -1))))))
-         (t (setf *hovered-card* -1))))
-     ;; (let ((entity (find-entity-by (window-scene window) :coords (list x y))))
-     ;;   (unless (equal *hovered-entity* entity)
-     ;;     (entity-onmouseout *hovered-entity*)
-     ;;     (setf *hovered-entity* entity)
-     ;;     (when entity
-     ;;       (entity-onmouseover entity))))
-     ))
-  (when (> mask 0)
-    (format t "Mouse motion, button-mask = ~A at ~A, ~A~%" mask x y)))
+  (let ((entity (find-entity-by (window-scene window) :coords (list x y))))
+    (unless (equal *hovered-entity* entity)
+      (when *hovered-entity*
+        (entity-onmouseout *hovered-entity*))
+      (setf *hovered-entity* entity)
+      (when entity
+        (entity-onmouseover entity)))))
 
-(defmethod controller-added-event ((window simple-window) c)
-  (format t "Added ~A (id=~A)~%" c (sdl2:game-controller-instance-id c)))
+(defvar *was-init* nil)
 
-(defmethod controller-removed-event ((window simple-window) c)
-  (format t "Removed ~A (id=~A)~%" c (sdl2:game-controller-instance-id c)))
+(defun init ()
+  (unless *was-init*
+    (setf *was-init* t)
+    (sdl2-image:init '(:png))
+    (sdl2-ttf:init)
+    (sdl2-mixer:init :ogg)
+    (sdl2-mixer:open-audio 44100 :s16sys 1 1024)))
 
-(defmethod controller-axis-motion-event ((window simple-window) c ts axis value)
-  (format t "ID ~A, Axis ~A, Value ~A~%"
-          (sdl2:game-controller-instance-id c) axis value))
+(defun deinit ()
+  (when *was-init*
+    (setf *was-init* nil)
 
-(defmethod controller-button-event ((window simple-window) c state ts button)
-  (format t "ID ~A, Button ~A, State ~S~%"
-          (sdl2:game-controller-instance-id c) button state))
+    (sdl2-mixer:quit)
 
-;; (make-instance 'simple-window)
+    (sdl2-ttf:close-font *font*)
+    (sdl2-ttf:close-font *small-font*)
+    (sdl2-ttf:quit)
+
+    (sdl2-image:quit)
+    (setf *window* nil)
+    (sdl2.kit:quit)))
 
 (defun start ()
-  (kit.sdl2:start)
+  (define-dictionary dict
+    (:ru-RU (asset-path "i18n/ru_RU/dict.lisp")))
+  (setf *random-state* (make-random-state t))
+  (setf (current-dictionary) :dict)
+  (setf *locale* :ru-RU)
+
+  (init)
+  (init-tex-cache)
   (start-round)
-  (set-state :player-1)
-  (setf *window* (make-instance 'simple-window)))
+  (setf *window* (make-instance 'simple-window
+                                :title "Lisptone"
+                                :w *screen-width*
+                                :h *screen-height*
+                                :borderless t)))
 
 (defun main ()
   (setf *debug* t)
+  (sdl2.kit:start)
   (start))
 
 (defun main-win ()
   (setf *debug* nil)
-  (start)
-  (sdl2:make-this-thread-main))
+  (sdl2.kit:with-start (:this-thread-p t)
+    (start)))
